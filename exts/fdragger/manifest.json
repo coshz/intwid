@@ -1,0 +1,33 @@
+{
+    "manifest_version": 3,
+    "name": "Fdragger",
+    "version": "0.1",
+    "description": "An assistant to sniff photos from flickr through drag.",
+    "icons": {
+        "16":"resource/icon_dual.png",
+        "32":"resource/icon_dual.png",
+        "48":"resource/icon_dual.png"
+    },
+    "background": {
+        "service_worker": "scripts/background.js",
+        "type": "module"
+    },
+    "content_scripts":[
+        {
+            "js": ["scripts/content.js"],
+            "matches": [
+                "https://developer.chrome.com/docs/extensions/*",
+                "https://developer.chrome.com/docs/webstore/*",
+                "*://*.flickr.com/*"
+              ]
+        }
+    ],
+    "options_ui": {
+        "page": "pages/options.html",
+        "open_in_tab": false
+    },
+    "permissions":[
+        "storage",
+        "downloads"
+    ]
+}
