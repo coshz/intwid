@@ -39,6 +39,9 @@ class DragReceiver {
 
     async handleDrop(event){
         const idx_photo = event.dataTransfer.getData("Text");
+        // const idx_page = idx_photo.replace(/([^ ]+?)(\/in\/[^ ]+)?/g, "$1") + "/sizes/l";
+        // console.log(idx_photo);
+        // console.log(idx_page);
         let url = "";
         let success = false;
         let retryId = 0;
@@ -72,10 +75,9 @@ class DragReceiver {
     }
 }
 
-
+/* To obtain real image url */
 async function diveUrl(idx_photo) {
-    // obtain real image url from `flickr.com/photos/<user>/<pic>/in/<album>`
-    const idx_page = idx_photo.replace(/(.+)\/in\/(.+)/g, "$1/sizes/l");
+    const idx_page =  idx_photo.replace(/([^ ]+?)(\/in\/[^ ]+)?/g, "$1") + "/sizes/l";
     return fetch(idx_page)
       .then(response => {
         if(response.ok) {
@@ -124,8 +126,11 @@ function main() {
     const drag_receiver = new DragReceiver(console);
     document.ondragstart = function(event) {
         if(event.target.tagName == "A") {
-            event.dataTransfer.setData("Text", event.target.href);
-            drag_receiver.show();
+            const idx= event.target.href;
+            if(idx.match(/([^ ]+?)(\/photos)(\/[^\/ ]+){2}(\/in\/[^\/ ]+)?\/?/)){
+                event.dataTransfer.setData("Text", event.target.href);
+                drag_receiver.show();
+            }
         } 
     };
     document.ondragend = function(event) {

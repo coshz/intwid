@@ -3,17 +3,31 @@
 <head>
     <title>Extension Options</title>
     <script type="text/javascript" src="js/form.js"></script>
+    <style>
+        input {
+            border: none;
+            border-bottom: 1px solid #333;
+            padding: 5px;
+            width: 100px;
+            display: 'inline';
+            outline: none;
+        }
+    </style>
 </head>
 <body>
     <p><b>Extension Options</b></p>
     <form id="options-form">
-        Save to:
         <label>
-            <input type="text" id="saveto" placeholder="flickr">
+            Save to: <input type="text" id="saveto" value="flickr"/>
+        </label>
+        <br>
+        <label>
+            Name: <input type="text" id="name" value="$(ori)"/>
         </label>
         <br>
         <br>
-        <button type="submit">Save</button>
+        <button type="submit">OK</button>
+        <p id="status"></p>
     </form>
 </body>
 </html>

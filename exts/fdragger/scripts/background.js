@@ -1,15 +1,29 @@
 
-async function downloadUri(uri) {
-    const fname = uri.substring(uri.lastIndexOf('/')+1);
-    chrome.storage.sync.get(['saveto'], (result) => {
+async function downloadUri(request) {
+    chrome.storage.sync.get(['saveto', 'name'], (result) => {
         const savedir = result.saveto || "flickr";
+        const name = naming(request, result.name || "$(ori)");
         const download_option = {
-            url: uri,
-            filename: `${savedir}/${fname}`,
+            url: request.uri,
+            filename: `${savedir}/${name}`,
             conflictAction: 'uniquify'
         };
         chrome.downloads.download(download_option);
     });
+}
+
+function naming(request, fname) {
+    const reg = /(?:.*)?\/photos\/([^\/]+)\/([^\/]+)(?:\/in\/([^\/]+))?\/?/;
+    const [ _, user, photo, album, ...rest ] = request.idx.match(reg);
+    const [ori, ext] = request.uri.substring(request.uri.lastIndexOf('/')+1).split('.');
+    return fname.replace(/\$\((user|album|photo|ori)\)/g, 
+        matched => ({
+            "$(user)": user,
+            "$(album)": album,
+            "$(photo)": photo,
+            "$(ori)":ori
+        })[matched] + `.${ext}`
+    );
 }
 
 function createLogger(logger) {
@@ -37,7 +51,7 @@ function main() {
             logger.error(`failed to fetch ${request.idx}.`);
             idx_list.push(request.idx);
         } else {
-            downloadUri(request.uri);
+            downloadUri(request);
             // logger.info("succeed to fetch ${request.idx}.");
         }
     });
