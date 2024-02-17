@@ -1,0 +1,6 @@
+# Release notes
+
+v0.1 
+- support downloading pictures by range of pages or datetime;
+- support resume failed urls;
+- support renaming file names (speical variables `bid`,`idx`,`name`);
