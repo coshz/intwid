@@ -1,6 +1,8 @@
 import logging
 import os
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm.auto import tqdm
 
 
 def create_logger(
@@ -55,13 +57,27 @@ class DownloadHelper:
         try:
             r = requests.get(url, headers=cls.get_header(), timeout=(5,10), stream=True)
             r.raise_for_status()
-        except Exception as e:
-            return e, (url, path)
-        else:
             with open(path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=4096):
                     f.write(chunk)
             return None, None
+        except Exception as e:
+            if os.path.exists(path): os.remove(path)
+            return e, (url, path)     
+
+    @classmethod
+    def fetch_all(cls, url_paths):
+        url_paths = list(url_paths)
+        bad_url_paths = list()
+        with ThreadPoolExecutor() as executor:
+            futures = [ executor.submit(cls.worker_fn, *url_path)
+                       for url_path in url_paths ]
+            for future in tqdm(as_completed(futures), total=len(url_paths)):
+                err, url_path = future.result()
+                if err is not None:
+                    bad_url_paths.append(url_path)
+        return bad_url_paths
+    
 
 # def retry_helper(tries=2, exceptions=Exception):
 #     from functools import wraps

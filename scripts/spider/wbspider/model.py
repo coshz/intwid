@@ -1,10 +1,9 @@
 import requests
 import os
 import re
-from utils import DownloadHelper, create_logger
 from datetime import datetime
 from tqdm.auto import tqdm
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from utils import DownloadHelper, create_logger
 
 
 class Model:
@@ -15,18 +14,21 @@ class Model:
     _comment_api    = "https://m.weibo.cn/api/comments/show?id={id}&page={page}"
     _picture_apis   = [ "https://wx4.sinaimg.cn/large/{pid}.jpg", "https://wx4.sinaimg.cn/orj360/{pid}.jpg" ]
     
-    LOG_NAME    = 'wb'      # logging file
+    LOG_NAME    = 'wb'          # logging file
     PIC_FILE    = 'pic.csv'     # picture table of line format `pid,bid,index`
     RESUME_FILE = 'resume.csv'  # failed urls of line format `url,name` 
-    OUT_DIR     = 'out/'        # output directory of pictures
 
     def __init__(self, option):
         self.option = option
         self.user_info = self.get_userinfo_(self.option.uid)
         self.logger = create_logger(self.LOG_NAME)
         self.downloader = DownloadHelper(cookie=option.cookie)
-        self.logger.info("Profile << name: %s, #status: %s >>" %
-                         (self.user_info['name'], self.user_info['stat']))
+        self.logger.info("[%s] << name: %s, #status: %s, #page: %s >>" % (
+            self.user_info['uid'],
+            self.user_info['name'],
+            self.user_info['stat'],
+            self.user_info['page']
+        ))
         
     @staticmethod
     def fetch_json_(api, kwargs):
@@ -36,16 +38,30 @@ class Model:
     
     @classmethod
     def get_userinfo_(cls, uid) -> dict:
+        def page_max(uid):
+            first_page = cls.fetch_json_(cls._timeline_api, {'uid': uid, 'page': 1})
+            last_maybe = first_page['data']['cardlistInfo']['total'] // \
+                            first_page['data']['cardlistInfo']['autoLoadMoreIndex'] + 1
+            last_page = cls.fetch_json_(cls._timeline_api, {'uid': uid, 'page': last_maybe})
+            
+            if not last_page['ok']: 
+                return last_maybe - 1
+            elif last_page['data']['cardlistInfo'].get('since_id'):
+                return last_maybe + 1
+            else: 
+                return last_maybe
+        
         user_json = Model.fetch_json_(cls._user_api,{'uid':uid})
         return {
-            'uid': uid,
+            'uid':  uid,
             'name': user_json['data']['userInfo']['screen_name'],
             'stat': user_json['data']['userInfo']['statuses_count'],
+            'page': page_max(uid)
         }
     
     def get_pages_(self, page_start, page_end) -> int:
-        """return the last fetched page"""
-        
+        """return the last fetched page and datetime"""
+
         # we write the result at the intervals between pages
         pic_fp = open(self.PIC_FILE,'w')
         for page in tqdm(range(page_start, page_end + 1)):
@@ -62,91 +78,133 @@ class Model:
                    sj.get('mblog') is None or \
                    (sj['mblog']['mblog_vip_type'] != 0 and not self.option.vip): continue
 
-                # check datetime
-                if self.option.st or self.option.et:
-                    sj_time = datetime.strptime(sj['mblog']['created_at'], "%a %b %d %H:%M:%S %z %Y")\
-                                      .strftime('%Y-%m-%d %H:%M:%S')
-                    if self.option.et and self.option.et < sj_time: continue
-                    if self.option.st and self.option.st > sj_time: break
-
                 # we're interested in pictures only
                 status = { 
                     'bid':  sj['mblog']['bid'],
                     'pics': sj['mblog']['pic_ids']
                 }
                 if status['pics']: page_statuses.append(status)
-            else: 
-                for s in page_statuses:
-                    pic_fp.write('\n'.join([f"{s['bid']},{i},{pid}" for i,pid in enumerate(s['pics'])]))
-                    pic_fp.write('\n')
-                continue
-            break
+            
+            for s in page_statuses:
+                pic_fp.write('\n'.join([f"{s['bid']},{i},{pid}" for i,pid in enumerate(s['pics'])]))
+                pic_fp.write('\n')
         
         pic_fp.close()
         return page_end
     
-    def get_pictures_(self, url_paths):
-        url_paths = list(url_paths)
-        bad_url_paths = list()
-        with ThreadPoolExecutor() as executor:
-            futures = [ executor.submit(self.downloader.worker_fn, *url_path)
-                       for url_path in url_paths ]
-            for future in tqdm(as_completed(futures), total=len(url_paths)):
-                err, url_path = future.result()
-                if err is not None:
-                    bad_url_paths.append(url_path)
-                    self.logger.debug(f"Exception `{err}` occured when downloading {url_path[0]}")
-        return bad_url_paths
-    
-    # def get_pictures2_(self, url_paths):
-    #     url_paths = list(url_paths)
-    #     bad_url_paths = list()
-    #     with ProcessPoolExecutor() as executor:
-    #         iter_res = executor.map(self.downloader.worker_fn, *zip(*url_paths))
-    #         for err, url_path in tqdm(iter_res, total=len(url_paths)):
-    #             if err is not None:
-    #                 bad_url_paths.append(url_path)
-    #                 self.logger.debug(f"Exception `{err}` occured when downloading {url_path[0]}")
-    #     return bad_url_paths
-    
+    def query_datetime_by_page_(self, page, latest=False):
+        """return page.et (the smallest created datetime)"""
+        p  = self.fetch_json_(self._timeline_api, {'uid': self.option.uid, 'page': page})
+        s  = [status for status in p['data']['cards']
+            if not status['profile_type_id'].startswith('proweibotop_')]
+        assert len(s) > 0, "empty page ???"
+        dt = s[0 if latest else -1]['mblog']['created_at']
+        return datetime.strptime(dt, "%a %b %d %H:%M:%S %z %Y")\
+                       .strftime('%Y-%m-%d %H:%M:%S')
+
+    def query_page_by_datetime_(self, dt):
+        """find the page such that: page.st <= dt <= page.et"""
+        assert len(dt) == 19, f'`{dt}`: wrong datetime format'
+        def compare_(dt, page):
+            dt_fn = lambda status:\
+                datetime.strptime(status['mblog']['created_at'], "%a %b %d %H:%M:%S %z %Y")\
+                        .strftime('%Y-%m-%d %H:%M:%S')
+            
+            p = self.fetch_json_(self._timeline_api, {'uid': self.option.uid, 'page': page})
+            statuses = [status for status in p['data']['cards']
+                        if not status['profile_type_id'].startwith('proweibotop_')]
+            
+            dt_h, dt_l = dt_fn(statuses[0]), dt_fn(statuses[-1])
+            assert dt_h >= dt_l, 'Ha ???'
+
+            if dt_h >= dt and dt >= dt_l: return 0
+            else: return 1 if dt > dt_h else -1
+
+        page_l, page_h = 1, self.user_info['page']
+        while page_l < page_h:
+            page_m = (page_l + page_h) // 2
+            leg = compare_(dt, page_m)
+            if leg == 0: 
+                return page_m
+            elif leg == 1:
+                page_l, page_h = page_m, page_h
+            else:
+                page_l, page_h = page_l, page_m
+        return page_h
+
     def process(self):
-        """Two phases: 1. resolve pics to `PIC_FILE`; 2. download pics to `OUT_DIR`."""
-        out_dir = os.path.join(
-            self.option.out if self.option.out else self.OUT_DIR, self.user_info['name'])
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
+        if not any([self.option.resume, self.option.resolve, self.option.download,
+            self.option.all,self.option.sp, self.option.ep,
+            self.option.st, self.option.et]): 
+                self.logger.info('do nothing.')
+                return
+        
+        out_dir = os.path.join(self.option.out, self.user_info['name'])
+        if not os.path.exists(out_dir): os.makedirs(out_dir)
         urls = paths = list()
 
+        # get picture-urls from resolving or loading
         if self.option.resume:
+            self.logger.debug('Task: resume')
             if not os.path.exists(self.RESUME_FILE): 
-                self.logger.error("`--resume` is specified but `resume.csv` is not found")
-                return
-            self.logger.info(f"Loading url-path pairs from file `{self.RESUME_FILE}` ...")
+                self.logger.error(
+                    f"quit since `{self.RESUME_FILE}` is not found; try `--download`?"
+                )
+                exit(1)
+            self.logger.info(f"loading file `{self.RESUME_FILE}` ...")
             with open(self.RESUME_FILE,'r') as f:
                 parts_  = re.split(re.compile(",|\n"), f.read())
                 urls = parts_[0::2]
                 paths = parts_[1::2]
         else:
-            if not self.option.download: 
-                page_max = self.user_info['stat'] // 10 + 1
-                page_start = max(self.option.sp, 1)
-                page_end = min(self.option.ep, page_max) # 10 statuses per page
-                if page_start > page_max:
-                    self.logger.error(f"bad args: sp={self.option.sp} is out of range [1,{page_max}]")
-                    return 
-                self.logger.info('Resolving pictures ...')
-                page_last = self.get_pages_(page_start, page_end)
-                if page_start <= page_last:
-                    self.logger.info(f"page {page_start} ~ {page_last} are fetched")
-                else:
-                    self.logger.warn('nothing is fetched, please retry')
-                self.logger.info("Done.")
-                if self.option.resolve: return
-            elif not os.path.exists(self.PIC_FILE):
-                self.logger.warn("`--download` is specified but `pic.csv` is not found")
-                return
+            if self.option.download: 
+                if not os.path.exists(self.PIC_FILE):
+                    self.logger.error(f"quit since `--download` is specified "
+                                     f"while `{self.PIC_FILE}` is not found")
+                    exit(1)
+            else:
+                self.logger.info('Task: resolve')
+                
+                if self.option.sp > self.user_info['page']:
+                    self.logger.error(f'page {self.option.sp} out of range')
+                    exit(1)
+
+                # for simplicity, I convert range of datetime to range of pages
             
-            self.logger.info(f"Loading url-path pairs from file {self.PIC_FILE} ...")
+                _ = lambda arg, call_f, default_v: call_f(arg) if arg else default_v
+                page_start = max(1,
+                    _(self.option.sp, lambda x:x, 0),
+                    _(self.option.st, self.query_page_by_datetime_, 0)
+                )
+                page_end = min(self.user_info['page'],
+                    _(self.option.ep, lambda x:x, 1<<30),
+                    _(self.option.et, self.query_page_by_datetime_, 1<<30)
+                )
+                del _
+
+                dt_start = self.query_datetime_by_page_(page_end)
+                dt_end   = self.query_datetime_by_page_(page_start,latest=True)
+                self.logger.info(f"range to fetch: "
+                                 f"page: {page_start} ~ {page_end}; "
+                                 f"time: {dt_start} ~ {dt_end}")
+                
+                page_last = self.get_pages_(page_start, page_end)
+                
+                if page_last < page_end:
+                    if page_last < page_start:
+                        self.logger.error('quit since no page is fetched, please retry')
+                        exit(1)
+                    else:
+                        self.logger.warn(f"we stop fetching at page {page_last}"
+                                         f"you could specify `--sp {page_last+1}` next time")   
+                
+                if self.option.resolve:
+                    self.logger.info("quit since `--resolve` is specified; "
+                                     "you can specify `--download` to download them")
+                    return
+            
+            self.logger.info('Task: download')
+            self.logger.info(f"loading file {self.PIC_FILE} ...")
             with open(self.PIC_FILE,'r') as f:
                 parts_ = re.split(re.compile(',|\n'),f.read())
                 bids_ = parts_[0::3]
@@ -158,17 +216,20 @@ class Model:
                     self.option.fmt.format(name=pids_[i],idx=idxs_[i],bid=bids_[i])+'.jpg')
                 for i in range(len(pids_))]  
 
-        if not any([
-            self.option.resume, self.option.download, self.option.all,
-            self.option.sp, self.option.ep,
-            self.option.st, self.option.et]): return
+        # download picture-urls
 
-        self.logger.info(f'Start to download {len(urls)} pictures.')
-        bad_url_paths = self.get_pictures_(zip(urls,paths))
-        self.logger.info(f"End: {len(urls)-len(bad_url_paths)} successed, {len(bad_url_paths)} failed.")
+        self.logger.info(f'start to download {len(urls)} pictures.')
+        bad_url_paths = self.downloader.fetch_all(zip(urls,paths))
+        self.logger.info(f"end: {len(urls)-len(bad_url_paths)} successed, {len(bad_url_paths)} failed.")
+        
+        # handle failed urls
+
         if len(bad_url_paths) > 0:
             with open(self.RESUME_FILE, 'w') as f:
                 f.write('\n'.join([','.join(bup) for bup in bad_url_paths])) 
-            self.logger.info("all failed images are savd in `resume.csv`, "
-                             "please use `--resume` to re-download them.")
-        self.logger.info("Done.")
+            self.logger.warn("please use `--resume` to re-download failed pictures.")
+        else:
+            self.logger.debug("clean up temporary files")
+            os.remove(self.PIC_FILE)
+            if os.path.exists(self.RESUME_FILE): os.remove(self.RESUME_FILE)
+            self.logger.info("Done.")

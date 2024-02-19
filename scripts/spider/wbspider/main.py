@@ -4,8 +4,8 @@ from model import Model
 
 def create_parser():
     parser = argparse.ArgumentParser(description="A weibo spider.")
-    parser.add_argument('uid', default='', help="user id")
-    parser.add_argument('-o','--out', default='', help="output directory")
+    parser.add_argument('uid', help="user id")
+    parser.add_argument('-o','--out', default='out/', help="output directory")
     parser.add_argument('-t','--thumbnail', action='store_true', help="obtain thumbnails instead of original pictures")
     parser.add_argument('--all', action='store_true', help="fetch all")
     parser.add_argument('--sp', default=0, type=int, help="specify the start page index")
@@ -26,9 +26,8 @@ if __name__ == "__main__":
     args = create_parser().parse_args()
 
     # validate args
-    assert len(args.st) in [0,10,19] and len(args.et) in [0,10,19] \
-        , "incorrect datetime format"
     if len(args.st) == 10: args.st += ' 00:00:01'
     if len(args.et) == 10: args.et += ' 23:59:59'
+    assert len(args.st) in [0,10,19] and len(args.et) in [0,10,19], "incorrect datetime format"
 
     Model(args).process()

@@ -1,5 +1,9 @@
 # Release notes
 
+v1.1 
+- add conversion between start/end pages between datatime to import performance
+- add datetime information in log
+
 v0.1 
 - support downloading pictures by range of pages or datetime;
 - support resume failed urls;
